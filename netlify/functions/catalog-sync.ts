@@ -15,67 +15,113 @@ export const handler = async (event: any) => {
 
   const auth = event.headers.authorization || '';
   const token = auth.replace('Bearer ', '').trim();
+  let resolvedVendorId = null;
 
-  const { data: apiKeyRow, error: keyError } = await supabase
-    .from('vendor_api_keys')
-    .select('id, vendor_id, is_active')
-    .eq('api_key', token)
-    .eq('is_active', true)
-    .maybeSingle();
+  // Check API key first
+  if (token && token !== '') {
+    const { data: apiKeyRow, error } = await supabase
+      .from('vendor_api_keys')
+      .select('vendor_id')
+      .eq('api_key', token)
+      .eq('is_active', true)
+      .maybeSingle();
 
-  if (keyError || !apiKeyRow) {
-    return {
-      statusCode: 401,
-      body: JSON.stringify({ error: 'Invalid API key' })
-    };
+    if (error || !apiKeyRow) {
+      return {
+        statusCode: 401,
+        body: JSON.stringify({ error: 'Invalid API key' })
+      };
+    }
+
+    resolvedVendorId = apiKeyRow.vendor_id;
+  } else {
+    // No token – try Shopify vendor fallback
+    const rawBody = JSON.parse(event.body || '{}');
+    const storeName = rawBody?.vendor;
+
+    if (!storeName) {
+      return {
+        statusCode: 401,
+        body: JSON.stringify({ error: 'No vendor name provided in webhook' })
+      };
+    }
+
+    const { data: mappedStore, error } = await supabase
+      .from('shopify_store_mappings')
+      .select('vendor_id')
+      .eq('store_name', storeName)
+      .maybeSingle();
+
+    if (error || !mappedStore) {
+      return {
+        statusCode: 401,
+        body: JSON.stringify({ error: 'No vendor matched for this store' })
+      };
+    }
+
+    resolvedVendorId = mappedStore.vendor_id;
   }
 
-  let body = JSON.parse(event.body || '{}');
+  // Parse into products array (handles Shopify raw too)
+  let payload = JSON.parse(event.body || '{}');
+  const products = payload.products || (payload.title ? [{
+    external_id: payload.id.toString(),
+    title: payload.title,
+    description: payload.body_html || '',
+    price: parseFloat(payload.variants?.[0]?.price || '0'),
+    category: payload.product_type || 'Uncategorized',
+    inventory_count: payload.variants?.[0]?.inventory_quantity || 0,
+    status: payload.status || 'active',
+    images: payload.images?.map((img: any) => img.src) || [],
+    metadata: {
+      vendor: payload.vendor || '',
+      handle: payload.handle || '',
+      shopify_id: payload.id
+    }
+  }] : []);
 
-  // Shopify product object transform fallback
-  if (body && body.title && body.variants) {
-    body = {
-      products: [
-        {
-          external_id: body.id.toString(),
-          title: body.title,
-          description: body.body_html,
-          price: parseFloat(body.variants?.[0]?.price || '0'),
-          category: body.product_type || 'Uncategorized',
-          inventory_count: body.variants?.[0]?.inventory_quantity || 0,
-          status: body.status || 'active',
-          images: body.images?.map((img: any) => img.src) || [],
-          metadata: {
-            vendor: body.vendor,
-            handle: body.handle
-          }
-        }
-      ]
-    };
-  }
+  const syncedTitles: string[] = [];
 
-  const inserted: any[] = [];
+  for (const product of products) {
+    const now = new Date().toISOString();
 
-  for (const product of body.products || []) {
-    const { error } = await supabase.from('vendor_listings').upsert({
-      vendor_id: apiKeyRow.vendor_id,
+    const insertData = {
+      vendor_id: resolvedVendorId,
       external_id: product.external_id,
       title: product.title,
       description: product.description,
       price: product.price,
+      category: product.category,
+      inventory_count: product.inventory_count || 0,
       status: product.status,
+      images: product.images,
       metadata: product.metadata,
-      synced_at: new Date().toISOString()
+      synced_at: now,
+    };
+
+    // Insert into vendor_listings
+    await supabase.from('vendor_listings').upsert(insertData, {
+      onConflict: 'vendor_id,external_id'
     });
 
-    if (!error) inserted.push(product.title);
+    // Also insert into properties (vendor dashboard)
+    await supabase.from('properties').upsert({
+      vendor_id: resolvedVendorId,
+      title: product.title,
+      description: product.description,
+      price: product.price,
+      images: product.images,
+      status: 'pending',
+      category: product.category,
+      source: 'shopify-sync',
+      synced_at: now
+    });
+
+    syncedTitles.push(product.title);
   }
 
   return {
     statusCode: 200,
-    body: JSON.stringify({
-      success: true,
-      synced: inserted.length
-    })
+    body: JSON.stringify({ success: true, synced: syncedTitles.length, titles: syncedTitles })
   };
 };
