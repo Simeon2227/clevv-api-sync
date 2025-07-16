@@ -108,11 +108,11 @@ export const handler = async (event: any) => {
     await supabase.from('properties').upsert({
       vendor_id: resolvedVendorId,
       title: product.title,
-      description: product.description,
-      price: product.price,
-      images: product.images,
+      description: product.description || '',
+      price: product.price || 0,
+      images: product.images || [],
       status: 'pending',
-      category: product.category,
+      category: product.category || 'Uncategorized',
       source: 'shopify-sync',
       synced_at: now
     });
