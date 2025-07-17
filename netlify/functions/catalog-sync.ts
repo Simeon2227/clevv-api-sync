@@ -17,8 +17,8 @@ export const handler = async (event: any) => {
   const token = auth.replace('Bearer ', '').trim();
   let resolvedVendorId = null;
 
-  // Check API key first
-  if (token && token !== '') {
+  // STEP 1: Try API key authentication
+  if (token) {
     const { data: apiKeyRow, error } = await supabase
       .from('vendor_api_keys')
       .select('vendor_id')
@@ -35,34 +35,38 @@ export const handler = async (event: any) => {
 
     resolvedVendorId = apiKeyRow.vendor_id;
   } else {
-    // Shopify webhook fallback – resolve via shop_domain
+    // STEP 2: Try Shopify webhook authentication
     const rawBody = JSON.parse(event.body || '{}');
-    const shopDomain = rawBody?.shop_domain;
+    const vendorName = rawBody?.vendor;
+    const shopDomain = event.headers['x-shopify-shop-domain'] || '';
 
-    if (!shopDomain) {
+    let storeLookupField = vendorName || shopDomain;
+    let storeColumn = vendorName ? 'store_name' : 'shop_url';
+
+    if (!storeLookupField) {
       return {
         statusCode: 401,
-        body: JSON.stringify({ error: 'Missing shop_domain in webhook payload' })
+        body: JSON.stringify({ error: 'No vendor/store identifier found' })
       };
     }
 
     const { data: mappedStore, error } = await supabase
       .from('shopify_store_mappings')
       .select('vendor_id')
-      .eq('shop_url', shopDomain)
+      .eq(storeColumn, storeLookupField)
       .maybeSingle();
 
     if (error || !mappedStore) {
       return {
         statusCode: 401,
-        body: JSON.stringify({ error: 'No vendor matched for this shop_domain' })
+        body: JSON.stringify({ error: 'Store not mapped to vendor' })
       };
     }
 
     resolvedVendorId = mappedStore.vendor_id;
   }
 
-  // Parse into products array (single product from webhook or bulk import)
+  // STEP 3: Parse product(s)
   let payload = JSON.parse(event.body || '{}');
   const products = payload.products || (payload.title ? [{
     external_id: payload.id?.toString(),
