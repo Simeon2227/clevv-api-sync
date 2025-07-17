@@ -35,37 +35,37 @@ export const handler = async (event: any) => {
 
     resolvedVendorId = apiKeyRow.vendor_id;
   } else {
-    // No token – try Shopify vendor fallback
+    // Shopify webhook fallback – resolve via shop_domain
     const rawBody = JSON.parse(event.body || '{}');
-    const storeName = rawBody?.vendor;
+    const shopDomain = rawBody?.shop_domain;
 
-    if (!storeName) {
+    if (!shopDomain) {
       return {
         statusCode: 401,
-        body: JSON.stringify({ error: 'No vendor name provided in webhook' })
+        body: JSON.stringify({ error: 'Missing shop_domain in webhook payload' })
       };
     }
 
     const { data: mappedStore, error } = await supabase
       .from('shopify_store_mappings')
       .select('vendor_id')
-      .eq('store_name', storeName)
+      .eq('shop_url', shopDomain)
       .maybeSingle();
 
     if (error || !mappedStore) {
       return {
         statusCode: 401,
-        body: JSON.stringify({ error: 'No vendor matched for this store' })
+        body: JSON.stringify({ error: 'No vendor matched for this shop_domain' })
       };
     }
 
     resolvedVendorId = mappedStore.vendor_id;
   }
 
-  // Parse into products array (handles Shopify raw too)
+  // Parse into products array (single product from webhook or bulk import)
   let payload = JSON.parse(event.body || '{}');
   const products = payload.products || (payload.title ? [{
-    external_id: payload.id.toString(),
+    external_id: payload.id?.toString(),
     title: payload.title,
     description: payload.body_html || '',
     price: parseFloat(payload.variants?.[0]?.price || '0'),
