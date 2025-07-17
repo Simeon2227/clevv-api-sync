@@ -71,7 +71,7 @@ export const handler = async (event: any) => {
     price: parseFloat(payload.variants?.[0]?.price || '0'),
     category: payload.product_type || 'Uncategorized',
     inventory_count: payload.variants?.[0]?.inventory_quantity || 0,
-    status: payload.status || 'active',
+    status: 'approved',
     images: payload.images?.map((img: any) => img.src) || [],
     metadata: {
       vendor: payload.vendor || '',
@@ -89,32 +89,20 @@ export const handler = async (event: any) => {
       vendor_id: resolvedVendorId,
       external_id: product.external_id,
       title: product.title,
-      description: product.description,
-      price: product.price,
-      category: product.category,
-      inventory_count: product.inventory_count || 0,
-      status: product.status,
-      images: product.images,
-      metadata: product.metadata,
-      synced_at: now,
-    };
-
-    // Insert into vendor_listings
-    await supabase.from('vendor_listings').upsert(insertData, {
-      onConflict: 'vendor_id,external_id'
-    });
-
-    // Also insert into properties (vendor dashboard)
-    await supabase.from('properties').upsert({
-      vendor_id: resolvedVendorId,
-      title: product.title,
       description: product.description || '',
       price: product.price || 0,
+      category: product.category || 'Real Estate',
+      inventory_count: product.inventory_count || 1,
+      status: 'approved',
       images: product.images || [],
-      status: 'pending',
-      category: product.category || 'Uncategorized',
+      metadata: product.metadata || {},
       source: 'shopify-sync',
-      synced_at: now
+      synced_at: now,
+      visible_on_dashboard: true
+    };
+
+    await supabase.from('vendor_listings').upsert(insertData, {
+      onConflict: 'vendor_id,external_id'
     });
 
     syncedTitles.push(product.title);
